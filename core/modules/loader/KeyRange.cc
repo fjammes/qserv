@@ -23,9 +23,8 @@
 
 
 // Class header
-#include "loader/StringRange.h"
+#include "KeyRange.h"
 
-// System headers
 #include <iostream>
 
 // qserv headers
@@ -54,7 +53,7 @@ std::ostream& operator<<(std::ostream& os, NeighborsInfo const& ni) {
     return os;
 }
 
-std::ostream& operator<<(std::ostream& os, StringRange const& strRange) {
+std::ostream& operator<<(std::ostream& os, KeyRange const& strRange) {
     os << "valid=" << strRange._valid
        << " min=" << strRange._min
        << " max=" << strRange._maxE
@@ -63,8 +62,64 @@ std::ostream& operator<<(std::ostream& os, StringRange const& strRange) {
 }
 
 
-std::string StringRange::incrementString(std::string const& str, char appendChar) {
+void KeyRange::setAllInclusiveRange() {
+    _min = CompositeKey(0,"");
+    _maxE = CompositeKey(CompositeKey::maxIntVal(), "");
+    _unlimited = true;
+    setValid();
+}
+
+
+bool KeyRange::setMin(CompositeKey const& val) {
+    if (not _unlimited && val >= _maxE) {
+        _min = decrement(_maxE);
+        return false;
+    }
+    _min = val;
+    return true;
+}
+
+
+bool KeyRange::setMax(CompositeKey const& val, bool unlimited) {
+    _unlimited = unlimited;
+    if (unlimited) {
+        if (val > _maxE) { _maxE = val; }
+        return true;
+    }
+    if (val < _min) {
+        _maxE = increment(_min);
+        return false;
+    }
+    _maxE = val;
+    return true;
+}
+
+
+bool KeyRange::setMinMax(CompositeKey const& vMin, CompositeKey const& vMax, bool unlimited) {
+    _unlimited = unlimited;
+    if (!unlimited && vMin > vMax) {
+        return false;
+    }
+    _unlimited = unlimited;
+    if (_unlimited) {
+        _min = vMin;
+        _maxE = std::max(vMax, _min); // max is irrelevant at this point
+    } else {
+        _min = vMin;
+        _maxE = vMax;
+    }
+    setValid();
+    return true;
+}
+
+
+
+
+std::string KeyRange::incrementString(std::string const& str, char appendChar) {
     std::string output(str);
+    if (output.empty()) {
+        output += appendChar;
+    }
     size_t pos = output.size() - 1;
     char lastChar = output[pos];
     if (lastChar < 'z') {
@@ -77,7 +132,13 @@ std::string StringRange::incrementString(std::string const& str, char appendChar
 }
 
 
-std::string StringRange::decrementString(std::string const& str, char minChar) {
+CompositeKey KeyRange::increment(CompositeKey const& key, char appendChar) {
+    CompositeKey outKey(key.kInt, incrementString(key.kStr, appendChar));
+    return outKey;
+}
+
+
+std::string KeyRange::decrementString(std::string const& str, char minChar) {
     if (str.empty()) {
         return std::string();
     }
@@ -95,7 +156,28 @@ std::string StringRange::decrementString(std::string const& str, char minChar) {
 }
 
 
-void ProtoHelper::workerKeysInfoExtractor(BufferUdp& data, uint32_t& wId, NeighborsInfo& nInfo, StringRange& strRange) {
+CompositeKey KeyRange::decrement(CompositeKey const& key, char minChar) {
+    CompositeKey outK(key);
+    if (outK.kStr.empty()) {
+        if (outK.kInt > 0) --outK.kInt;
+        return outK;
+    }
+    outK.kStr = decrementString(outK.kStr, minChar);
+    return outK;
+}
+
+
+void KeyRange::loadProtoRange(proto::WorkerRange& protoRange) {
+    protoRange.set_valid(_valid);
+    protoRange.set_minint(_min.kInt);
+    protoRange.set_minstr(_min.kStr);
+    protoRange.set_maxint(_maxE.kInt);
+    protoRange.set_maxstr(_maxE.kStr);
+    protoRange.set_maxunlimited(_unlimited);
+}
+
+
+void ProtoHelper::workerKeysInfoExtractor(BufferUdp& data, uint32_t& wId, NeighborsInfo& nInfo, KeyRange& keyRange) {
     auto funcName = "CentralWorker::_workerKeysInfoExtractor";
     LOGS(_log, LOG_LVL_DEBUG, funcName);
     auto protoItem = StringElement::protoParse<proto::WorkerKeysInfo>(data);
@@ -106,13 +188,13 @@ void ProtoHelper::workerKeysInfoExtractor(BufferUdp& data, uint32_t& wId, Neighb
     wId = protoItem->wid();
     nInfo.keyCount = protoItem->mapsize();
     nInfo.recentAdds = protoItem->recentadds();
-    proto::WorkerRangeString protoRange = protoItem->range();
+    proto::WorkerRange protoRange = protoItem->range();
     bool valid = protoRange.valid();
     if (valid) {
-        std::string min   = protoRange.min();
-        std::string max   = protoRange.max();
+        CompositeKey minKey(protoRange.minint(), protoRange.minstr());
+        CompositeKey maxKey(protoRange.maxint(), protoRange.maxstr());
         bool unlimited = protoRange.maxunlimited();
-        strRange.setMinMax(min, max, unlimited);
+        keyRange.setMinMax(minKey, maxKey, unlimited);
     }
     proto::Neighbor protoLeftNeigh = protoItem->left();
     nInfo.neighborLeft->update(protoLeftNeigh.wid());

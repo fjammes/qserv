@@ -181,7 +181,13 @@ bool MWorkerList::sendListTo(uint64_t msgId, std::string const& ip, short port,
                 workerList.appendToData(*_stateListData);
             }
         }
-        _central->sendBufferTo(ip, port, *_stateListData);
+        try {
+            _central->sendBufferTo(ip, port, *_stateListData);
+        } catch (boost::system::system_error const& e) {
+            LOGS(_log, LOG_LVL_ERROR, "MWorkerList::sendListTo boost system_error=" << e.what() <<
+                    " msgId=" << msgId << " ip=" << ip << " port=" << port <<
+                    " ourName=" << ourHostName << " ourPort=" << ourPort);
+        }
     }
 
     // See if this worker is know.

@@ -21,80 +21,50 @@
  * see <http://www.lsstcorp.org/LegalNotices/>.
  *
  */
-#ifndef LSST_QSERV_LOADER_STRINGRANGE_H
-#define LSST_QSERV_LOADER_STRINGRANGE_H
+#ifndef LSST_QSERV_LOADER_KEYRANGE_H
+#define LSST_QSERV_LOADER_KEYRANGE_H
 
 // system headers
 #include <memory>
 #include <string>
 
 // Qserv headers
+#include "loader/CompositeKey.h"
 #include "loader/Updateable.h"
+#include "proto/loader.pb.h"
 
 
 namespace lsst {
 namespace qserv {
 namespace loader {
 
-/// Class for storing the range of a single worker.
+/// Class for storing the key range of a single worker.
 /// This is likely to become a template class, hence lots in the header.
 /// It tries to keep its state consistent, _min < _max, but depends on
-/// other classes to eventually get the correct values for _min and _max
-class StringRange {
+/// other classes to eventually get the correct values for _min and _max.
+///
+/// When new workers are activated, they need placeholder values for
+/// for their ranges, as the new worker will have no keys. increment(...)
+/// and decrement(...) try to create reasonable key values for the ranges
+/// but true ranges cannot be established until the worker and its
+/// right neighbor (if there is one) each have at least one key. The worker
+/// ranges should eventually reach the master, then the other workers
+/// and clients.
+class KeyRange {
 public:
-    using Ptr = std::shared_ptr<StringRange>;
+    using Ptr = std::shared_ptr<KeyRange>;
 
-    StringRange() = default;
-    StringRange(StringRange const&) = default;
-    StringRange& operator=(StringRange const&) = default;
+    KeyRange() = default;
+    KeyRange(KeyRange const&) = default;
+    KeyRange& operator=(KeyRange const&) = default;
 
-    ~StringRange() = default;
+    ~KeyRange() = default;
 
-    void setAllInclusiveRange() {
-        _min = "";
-        _unlimited = true;
-        setValid();
-    }
+    void setAllInclusiveRange();
 
-    bool setMin(std::string const& val) {
-        if (not _unlimited && val >= _maxE) {
-            _min = decrementString(_maxE);
-            return false;
-        }
-        _min = val;
-        return true;
-    }
-
-    bool setMax(std::string const& val, bool unlimited=false) {
-        _unlimited = unlimited;
-        if (unlimited) {
-            if (val > _maxE) { _maxE = val; }
-            return true;
-        }
-        if (val < _min) {
-            _maxE = incrementString(_min);
-            return false;
-        }
-        _maxE = val;
-        return true;
-    }
-
-    bool setMinMax(std::string const& vMin, std::string const& vMax, bool unlimited=false) {
-        _unlimited = unlimited;
-        if (!unlimited && vMin > vMax) {
-            return false;
-        }
-        _unlimited = unlimited;
-        if (_unlimited) {
-            _min = vMin;
-            _maxE = std::max(vMax, _min); // max is irrelevant at this point
-        } else {
-            _min = vMin;
-            _maxE = vMax;
-        }
-        setValid();
-        return true;
-    }
+    bool setMin(CompositeKey const& val);
+    bool setMax(CompositeKey const& val, bool unlimited=false);
+    bool setMinMax(CompositeKey const& vMin, CompositeKey const& vMax, bool unlimited=false);
 
     bool setValid() {
         _valid = (_min <= _maxE );
@@ -102,29 +72,29 @@ public:
     }
 
     /// Return true if other functionally equivalent.
-    bool equal(StringRange const& other) const {
-        if (_valid != other._valid) { return false; }
-        if (not _valid) { return true; }  // both invalid
-        if (_min != other._min) { return false; }
-        if (_unlimited != other._unlimited) { return false; }
-        if (_unlimited) { return true; } // both same _min and _unlimited
-        if (_maxE != other._maxE) { return false; }
+    bool equal(KeyRange const& other) const {
+        if (_valid != other._valid) return false;
+        if (not _valid) return true;  // both invalid
+        if (_min != other._min) return false;
+        if (_unlimited != other._unlimited) return false;
+        if (_unlimited) return true; // both same _min and _unlimited
+        if (_maxE != other._maxE) return false;
         return true;
     }
 
-    bool isInRange(std::string const& str) const {
-        if (not _valid) { return false; }
-        if (str < _min) { return false; }
-        if (not _unlimited && str >= _maxE) { return false; }
+    bool isInRange(CompositeKey const& cKey) const {
+        if (not _valid) return false;
+        if (cKey < _min) return false;
+        if (not _unlimited && cKey >= _maxE) return false;
         return true;
     }
 
     bool getValid() const { return _valid; }
     bool getUnlimited() const { return _unlimited; }
-    std::string getMin() const { return _min; }
-    std::string getMax() const { return _maxE; }
+    CompositeKey const& getMin() const { return _min; }
+    CompositeKey const& getMax() const { return _maxE; }
 
-    bool operator<(StringRange const& other) const {
+    bool operator<(KeyRange const& other) const {
         /// Arbitrarily, invalid are less than valid, but such comparisons should be avoided.
         if (_valid != other._valid) {
             if (not _valid) { return true; }
@@ -135,27 +105,32 @@ public:
         return false;
     }
 
-    bool operator>(StringRange const& other) const {
+    bool operator>(KeyRange const& other) const {
         return other < *this;
     }
 
     /// Return a string that would slightly follow the value of the input string 'str'
     /// appendChar is the character appended to a string ending with a character > 'z'
     static std::string incrementString(std::string const& str, char appendChar='0');
+    /// Return a CompositeKey slightly higher value than 'key'.
+    static CompositeKey increment(CompositeKey const& key, char appendChar='0');
 
     // Return a string that would come slightly before 'str'. 'minChar' is the
     // smallest acceptable value for the last character before just erasing the last character.
     static std::string decrementString(std::string const& str, char minChar='0');
+    /// Return a CompositeKey slightly higher lower than 'key'.
+    static CompositeKey decrement(CompositeKey const& str, char minChar='0');
 
+    /// Load 'protoRange' with information from this object.
+    void loadProtoRange(proto::WorkerRange& protoRange);
 
-    friend std::ostream& operator<<(std::ostream&, StringRange const&);
+    friend std::ostream& operator<<(std::ostream&, KeyRange const&);
 
 private:
     bool        _valid{false}; ///< true if range is valid
     bool        _unlimited{false}; ///< true if the range includes largest possible values.
-    std::string _min; ///< Smallest value = ""
-    std::string _maxE; ///< maximum value exclusive
-
+    CompositeKey _min; ///< Smallest value = (0, "")
+    CompositeKey _maxE; ///< maximum value exclusive
 };
 
 
@@ -179,10 +154,10 @@ class BufferUdp;
 
 class ProtoHelper {
 public:
-    static void workerKeysInfoExtractor(BufferUdp& data, uint32_t& name, NeighborsInfo& nInfo, StringRange& strRange);
+    static void workerKeysInfoExtractor(BufferUdp& data, uint32_t& name, NeighborsInfo& nInfo, KeyRange& strRange);
 };
 
 }}} // namespace lsst::qserv::loader
 
-#endif // LSST_QSERV_LOADER_STRINGRANGE_H
+#endif // LSST_QSERV_LOADER_KEYRANGE_H
 

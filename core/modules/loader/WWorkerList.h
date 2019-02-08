@@ -74,7 +74,7 @@ public:
     bool equal(WWorkerListItem &other) const;
 
     /// @return true if 'key' can be found in this item's map.
-    bool containsKey(std::string const& key) const;
+    bool containsKey(CompositeKey const& key) const;
 
 private:
     WWorkerListItem(uint32_t wId, CentralWorker* central) : WorkerListItemBase(wId), _central(central) {}
@@ -127,8 +127,8 @@ public:
 
     void updateEntry(uint32_t wId,
                      std::string const& ipUdp, int portUdp, int portTcp,
-                     StringRange& strRange);
-    WWorkerListItem::Ptr findWorkerForKey(std::string const& key);
+                     KeyRange& strRange);
+    WWorkerListItem::Ptr findWorkerForKey(CompositeKey const& key);
 
     std::string dump() const;
 
@@ -138,7 +138,7 @@ protected:
     CentralWorker* _central;
     std::map<uint32_t, WWorkerListItem::Ptr> _wIdMap; ///< worker id map
     std::map<NetworkAddress, WWorkerListItem::Ptr> _ipMap;
-    std::map<StringRange, WWorkerListItem::Ptr> _rangeMap;
+    std::map<KeyRange, WWorkerListItem::Ptr> _rangeMap;
     bool _wListChanged{false}; ///< true if the list has changed
     uint32_t _totalNumberOfWorkers{0}; ///< total number of workers according to the master.
     mutable std::mutex _mapMtx; ///< protects _wIdMap, _ipMap, _rangeMap, _wListChanged

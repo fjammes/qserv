@@ -50,12 +50,13 @@ namespace loader {
 
 CentralClient::CentralClient(boost::asio::io_service& ioService_,
                              std::string const& hostName, ClientConfig const& cfg)
-    : Central(ioService_, cfg.getMasterHost(), cfg.getMasterPortUdp(), cfg.getThreadPoolSize(), cfg.getLoopSleepTime()),
+    : Central(ioService_, cfg.getMasterHost(), cfg.getMasterPortUdp(), cfg.getThreadPoolSize(), cfg.getLoopSleepTime(), cfg.getIOThreads()),
       _hostName(hostName), _udpPort(cfg.getClientPortUdp()),
       _defWorkerHost(cfg.getDefWorkerHost()),
       _defWorkerPortUdp(cfg.getDefWorkerPortUdp()),
       _doListMaxLookups(cfg.getMaxLookups()),
-      _doListMaxInserts(cfg.getMaxInserts()) {
+      _doListMaxInserts(cfg.getMaxInserts()),
+      _maxRequestSleepTime(cfg.getMaxRequestSleepTime()) {
 }
 
 
@@ -64,45 +65,45 @@ void CentralClient::start() {
 }
 
 
-void CentralClient::handleKeyInfo(LoaderMsg const& inMsg, BufferUdp::Ptr const& data) {
-    LOGS(_log, LOG_LVL_DEBUG, "CentralClient::handleKeyInfo");
+void CentralClient::handleKeyLookup(LoaderMsg const& inMsg, BufferUdp::Ptr const& data) {
+    LOGS(_log, LOG_LVL_DEBUG, "CentralClient::handleKeyLookup");
 
-    StringElement::Ptr sData = std::dynamic_pointer_cast<StringElement>(MsgElement::retrieve(*data));
+    auto const sData = std::dynamic_pointer_cast<StringElement>(MsgElement::retrieve(*data));
     if (sData == nullptr) {
-        LOGS(_log, LOG_LVL_WARN, "CentralClient::handleKeyInsertComplete Failed to parse list");
+        LOGS(_log, LOG_LVL_WARN, "CentralClient::handleKeyLookup Failed to parse list");
         return;
     }
     auto protoData = sData->protoParse<proto::KeyInfo>();
     if (protoData == nullptr) {
-        LOGS(_log, LOG_LVL_WARN, "CentralClient::handleKeyInsertComplete Failed to parse list");
+        LOGS(_log, LOG_LVL_WARN, "CentralClient::handleKeyLookup Failed to parse list");
         return;
     }
 
     // TODO put in separate thread
-    _handleKeyInfo(inMsg, protoData);
+    _handleKeyLookup(inMsg, protoData);
 }
 
 
-void CentralClient::_handleKeyInfo(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf) {
+void CentralClient::_handleKeyLookup(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf) {
     std::unique_ptr<proto::KeyInfo> protoData(std::move(protoBuf));
 
-    std::string key = protoData->key();
+    CompositeKey key(protoData->keyint(), protoData->keystr());
     ChunkSubchunk chunkInfo(protoData->chunk(), protoData->subchunk());
 
-    LOGS(_log, LOG_LVL_INFO, "trying to remove oneShot for lookup key=" << key << " " << chunkInfo);
+    LOGS(_log, LOG_LVL_DEBUG, "trying to remove oneShot for lookup key=" << key << " " << chunkInfo);
     /// Locate the original one shot and mark it as done.
-    CentralClient::KeyInfoReqOneShot::Ptr keyInfoOneShot;
+    CentralClient::KeyLookupReqOneShot::Ptr keyLookupOneShot;
     {
-        std::lock_guard<std::mutex> lck(_waitingKeyInfoMtx);
-        auto iter = _waitingKeyInfoMap.find(key);
-        if (iter == _waitingKeyInfoMap.end()) {
-            LOGS(_log, LOG_LVL_WARN, "handleKeyInfoComplete could not find key=" << key);
+        std::lock_guard<std::mutex> lck(_waitingKeyLookupMtx);
+        auto iter = _waitingKeyLookupMap.find(key);
+        if (iter == _waitingKeyLookupMap.end()) {
+            LOGS(_log, LOG_LVL_WARN, "_handleKeyLookup could not find key=" << key);
             return;
         }
-        keyInfoOneShot = iter->second;
-        _waitingKeyInfoMap.erase(iter);
+        keyLookupOneShot = iter->second;
+        _waitingKeyLookupMap.erase(iter);
     }
-    keyInfoOneShot->keyInfoComplete(key, chunkInfo.chunk, chunkInfo.subchunk, protoData->success());
+    keyLookupOneShot->keyInfoComplete(key, chunkInfo.chunk, chunkInfo.subchunk, protoData->success());
     LOGS(_log, LOG_LVL_INFO, "Successfully found key=" << key << " " << chunkInfo);
 }
 
@@ -129,12 +130,13 @@ void CentralClient::handleKeyInsertComplete(LoaderMsg const& inMsg, BufferUdp::P
 void CentralClient::_handleKeyInsertComplete(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf) {
     std::unique_ptr<proto::KeyInfo> protoData(std::move(protoBuf));
 
-    std::string key = protoData->key();
+    CompositeKey key(protoData->keyint(), protoData->keystr());
     ChunkSubchunk chunkInfo(protoData->chunk(), protoData->subchunk());
 
     LOGS(_log, LOG_LVL_DEBUG, "trying to remove oneShot for key=" << key << " " << chunkInfo);
     /// Locate the original one shot and mark it as done.
     CentralClient::KeyInsertReqOneShot::Ptr keyInsertOneShot;
+    size_t mapSize;
     {
         std::lock_guard<std::mutex> lck(_waitingKeyInsertMtx);
         auto iter = _waitingKeyInsertMap.find(key);
@@ -144,27 +146,47 @@ void CentralClient::_handleKeyInsertComplete(LoaderMsg const& inMsg, std::unique
         }
         keyInsertOneShot = iter->second;
         _waitingKeyInsertMap.erase(iter);
+        mapSize = _waitingKeyInsertMap.size();
     }
     keyInsertOneShot->keyInsertComplete();
-    LOGS(_log, LOG_LVL_INFO, "Successfully inserted key=" << key << " " << chunkInfo);
+    LOGS(_log, LOG_LVL_INFO, "Successfully inserted key=" << key << " " << chunkInfo <<
+                             " mapSize=" << mapSize);
 }
 
 
 /// Returns a pointer to a Tracker object that can be used to track job
 //  completion and the status of the job. keyInsertOneShot will call
-//  _keyInsertReq until it knows the task was completed, via a call
+//  _keyInsertReq until it knows the task was completed via a call
 //  to _handleKeyInsertComplete
-KeyInfoData::Ptr CentralClient::keyInsertReq(std::string const& key, int chunk, int subchunk) {
+KeyInfoData::Ptr CentralClient::keyInsertReq(CompositeKey const& key, int chunk, int subchunk) {
     // Insert a oneShot DoListItem to keep trying to add the key until
     // we get word that it has been added successfully.
     LOGS(_log, LOG_LVL_INFO, "Trying to insert key=" << key << " chunk=" << chunk <<
                              " subchunk=" << subchunk);
     auto keyInsertOneShot = std::make_shared<CentralClient::KeyInsertReqOneShot>(this, key, chunk, subchunk);
     {
-        std::lock_guard<std::mutex> lck(_waitingKeyInsertMtx);
+        std::unique_lock<std::mutex> lck(_waitingKeyInsertMtx);
+        // Limit the number of concurrent inserts.
+        // If the key is already in the map, there is no point in blocking.
+        int loopCount = 0;
         auto iter = _waitingKeyInsertMap.find(key);
+        while (_waitingKeyInsertMap.size() > _doListMaxInserts
+               && iter == _waitingKeyInsertMap.end()) {
+            size_t sz = _waitingKeyInsertMap.size();
+            lck.unlock();
+            if (loopCount % 100 == 0) {
+                LOGS(_log, LOG_LVL_INFO, "keyInsertReq waiting key=" << key <<
+                        "size=" << sz << " loopCount=" << loopCount);
+            }
+            // Let the CPU do something else while waiting for some requests to finish.
+            usleep(_maxRequestSleepTime);
+            ++loopCount;
+            lck.lock();
+            iter = _waitingKeyInsertMap.find(key);
+        }
+
         if (iter != _waitingKeyInsertMap.end()) {
-            // There is already an entry in the table and we can just use the existing entry,
+            // There is already an entry in the map and we can just use the existing entry,
             // as long as it has the same chunk and subchunk numbers.
             auto cData = iter->second->cmdData;
             if (cData->chunk == chunk && cData->subchunk == subchunk) {
@@ -186,7 +208,7 @@ KeyInfoData::Ptr CentralClient::keyInsertReq(std::string const& key, int chunk, 
 }
 
 
-void CentralClient::_keyInsertReq(std::string const& key, int chunk, int subchunk) {
+void CentralClient::_keyInsertReq(CompositeKey const& key, int chunk, int subchunk) {
     LOGS(_log, LOG_LVL_INFO, "CentralClient::_keyInsertReq trying key=" << key);
     LoaderMsg msg(LoaderMsg::KEY_INSERT_REQ, getNextMsgId(), getHostName(), getUdpPort());
     BufferUdp msgData;
@@ -198,7 +220,8 @@ void CentralClient::_keyInsertReq(std::string const& key, int chunk, int subchun
     protoAddr->set_udpport(getUdpPort());
     protoAddr->set_tcpport(getTcpPort());
     lsst::qserv::proto::KeyInfo* protoKeyInfo = protoKeyInsert.mutable_keyinfo();
-    protoKeyInfo->set_key(key);
+    protoKeyInfo->set_keyint(key.kInt);
+    protoKeyInfo->set_keystr(key.kStr);
     protoKeyInfo->set_chunk(chunk);
     protoKeyInfo->set_subchunk(subchunk);
     protoKeyInsert.set_hops(0);
@@ -206,32 +229,66 @@ void CentralClient::_keyInsertReq(std::string const& key, int chunk, int subchun
     StringElement strElem;
     protoKeyInsert.SerializeToString(&(strElem.element));
     strElem.appendToData(msgData);
-
-    sendBufferTo(getDefWorkerHost(), getDefWorkerPortUdp(), msgData);
+    try {
+        sendBufferTo(getDefWorkerHost(), getDefWorkerPortUdp(), msgData);
+    } catch (boost::system::system_error const& e) {
+        LOGS(_log, LOG_LVL_ERROR, "CentralClient::_keyInsertReq boost system_error=" << e.what() <<
+                                  " key=" << key << " chunk=" << chunk << " sub=" << subchunk);
+    }
 }
 
 
-KeyInfoData::Ptr CentralClient::keyInfoReq(std::string const& key) {
+KeyInfoData::Ptr CentralClient::keyLookupReq(CompositeKey const& key) {
     // Returns a pointer to a Tracker object that can be used to track job
     // completion and job status. keyInsertOneShot will call _keyInsertReq until
-    // it knows the task was completed. _handleKeyInsertComplete marks
+    // it knows the task was completed. _handleKeyInfoComplete marks
     // the jobs complete as the messages come in from workers.
     // Insert a oneShot DoListItem to keep trying to add the key until
     // we get word that it has been added successfully.
     LOGS(_log, LOG_LVL_INFO, "Trying to lookup key=" << key);
-    auto keyInfoOneShot = std::make_shared<CentralClient::KeyInfoReqOneShot>(this, key);
+    auto keyLookupOneShot = std::make_shared<CentralClient::KeyLookupReqOneShot>(this, key);
     {
-        std::lock_guard<std::mutex> lck(_waitingKeyInfoMtx);
-        _waitingKeyInfoMap[key] = keyInfoOneShot;
+        std::unique_lock<std::mutex> lck(_waitingKeyLookupMtx);
+        // Limit the number of concurrent lookups.
+        // If the key is already in the map, there is no point in blocking.
+        int loopCount = 0;
+        uint64_t sleptForMicroSec = 0;
+        uint64_t const tenSec = 10000000;
+        auto iter = _waitingKeyLookupMap.find(key);
+        while (_waitingKeyLookupMap.size() > _doListMaxLookups
+               && iter == _waitingKeyLookupMap.end()) {
+            size_t sz = _waitingKeyLookupMap.size();
+            lck.unlock();
+            // Log a message about this about once every 10 seconds.
+            if (sleptForMicroSec > tenSec) sleptForMicroSec = 0;
+            if (sleptForMicroSec == 0) {
+                LOGS(_log, LOG_LVL_INFO, "keyInfoReq waiting key=" << key <<
+                        "size=" << sz << " loopCount=" << loopCount);
+            }
+            // Let the CPU do something else while waiting for some requests to finish.
+            usleep(_maxRequestSleepTime);
+            sleptForMicroSec += _maxRequestSleepTime;
+            ++loopCount;
+            lck.lock();
+            iter = _waitingKeyLookupMap.find(key);
+        }
+
+        // Use the existing lookup, if there is one.
+        if (iter != _waitingKeyLookupMap.end()) {
+            auto cData = iter->second->cmdData;
+            return cData;
+        }
+
+        _waitingKeyLookupMap[key] = keyLookupOneShot;
     }
-    runAndAddDoListItem(keyInfoOneShot);
-    return keyInfoOneShot->cmdData;
+    runAndAddDoListItem(keyLookupOneShot);
+    return keyLookupOneShot->cmdData;
 }
 
 
-void CentralClient::_keyInfoReq(std::string const& key) {
-    LOGS(_log, LOG_LVL_INFO, "CentralClient::_keyInfoReq trying key=" << key);
-     LoaderMsg msg(LoaderMsg::KEY_INFO_REQ, getNextMsgId(), getHostName(), getUdpPort());
+void CentralClient::_keyLookupReq(CompositeKey const& key) {
+    LOGS(_log, LOG_LVL_INFO, "CentralClient::_keyLookupReq trying key=" << key);
+     LoaderMsg msg(LoaderMsg::KEY_LOOKUP_REQ, getNextMsgId(), getHostName(), getUdpPort());
      BufferUdp msgData;
      msg.appendToData(msgData);
      // create the proto buffer
@@ -241,7 +298,8 @@ void CentralClient::_keyInfoReq(std::string const& key) {
      protoAddr->set_udpport(getUdpPort());
      protoAddr->set_tcpport(getTcpPort());
      lsst::qserv::proto::KeyInfo* protoKeyInfo = protoKeyInsert.mutable_keyinfo();
-     protoKeyInfo->set_key(key);
+     protoKeyInfo->set_keyint(key.kInt);
+     protoKeyInfo->set_keystr(key.kStr);
      protoKeyInfo->set_chunk(0);
      protoKeyInfo->set_subchunk(0);
      protoKeyInsert.set_hops(0);
@@ -250,7 +308,12 @@ void CentralClient::_keyInfoReq(std::string const& key) {
      protoKeyInsert.SerializeToString(&(strElem.element));
      strElem.appendToData(msgData);
 
-     sendBufferTo(getDefWorkerHost(), getDefWorkerPortUdp(), msgData);
+     try {
+         sendBufferTo(getDefWorkerHost(), getDefWorkerPortUdp(), msgData);
+     } catch (boost::system::system_error const& e) {
+         LOGS(_log, LOG_LVL_ERROR, "CentralClient::_keyInfoReq boost system_error=" << e.what() <<
+                 " key=" << key);
+     }
 }
 
 
@@ -281,11 +344,11 @@ void CentralClient::KeyInsertReqOneShot::keyInsertComplete() {
 }
 
 
-util::CommandTracked::Ptr CentralClient::KeyInfoReqOneShot::createCommand()  {
+util::CommandTracked::Ptr CentralClient::KeyLookupReqOneShot::createCommand()  {
     struct KeyInfoReqCmd : public util::CommandTracked {
         KeyInfoReqCmd(KeyInfoData::Ptr& cd, CentralClient* cent_) : cData(cd), cent(cent_) {}
         void action(util::CmdData*) override {
-            cent->_keyInfoReq(cData->key);
+            cent->_keyLookupReq(cData->key);
         }
         KeyInfoData::Ptr cData;
         CentralClient* cent;
@@ -294,7 +357,7 @@ util::CommandTracked::Ptr CentralClient::KeyInfoReqOneShot::createCommand()  {
 }
 
 
-void CentralClient::KeyInfoReqOneShot::keyInfoComplete(std::string const& key,
+void CentralClient::KeyLookupReqOneShot::keyInfoComplete(CompositeKey const& key,
                                                        int chunk, int subchunk, bool success) {
     if (key == cmdData->key) {
         cmdData->chunk = chunk;

@@ -51,10 +51,10 @@ class ClientConfig;
 class KeyInfoData : public util::Tracker {
 public:
     using Ptr = std::shared_ptr<KeyInfoData>;
-    KeyInfoData(std::string const& key_, int chunk_, int subchunk_) :
+    KeyInfoData(CompositeKey const& key_, int chunk_, int subchunk_) :
         key(key_), chunk(chunk_), subchunk(subchunk_) {}
 
-    std::string key;
+    CompositeKey key;
     int chunk;
     int subchunk;
     bool success{false};
@@ -74,7 +74,6 @@ public:
 
     void start();
 
-
     ~CentralClient() override = default;
 
     std::string const& getHostName() const { return _hostName; }
@@ -86,31 +85,31 @@ public:
     /// @return the default worker's UDP port
     int getDefWorkerPortUdp() const { return _defWorkerPortUdp; }
 
-
-
     /// Asynchronously request a key value insert to the workers.
+    /// This can block if too many key insert requests are already in progress.
     /// @return - a KeyInfoData object for checking the job's status or
     ///           nullptr if CentralClient is already trying to insert the key
     ///           but value doesn't match the existing value. This indicates
     ///           there is an input data error.
-    KeyInfoData::Ptr keyInsertReq(std::string const& key, int chunk, int subchunk);
+    KeyInfoData::Ptr keyInsertReq(CompositeKey const& key, int chunk, int subchunk);
     /// Handle a workers response to the keyInserReq call
     void handleKeyInsertComplete(LoaderMsg const& inMsg, BufferUdp::Ptr const& data);
 
     /// Asynchronously request a key value lookup from the workers. It returns a
     /// KeyInfoData object to be used to track job status and get the value of the key.
-    KeyInfoData::Ptr keyInfoReq(std::string const& key);
+    /// This can block if too many key lookup requests are already in progress.
+    KeyInfoData::Ptr keyLookupReq(CompositeKey const& key);
     /// Handle a workers response to the keyInfoReq call.
-    void handleKeyInfo(LoaderMsg const& inMsg, BufferUdp::Ptr const& data);
+    void handleKeyLookup(LoaderMsg const& inMsg, BufferUdp::Ptr const& data);
 
     std::string getOurLogId() const override { return "client"; }
 
 private:
-    void _keyInsertReq(std::string const& key, int chunk, int subchunk); ///< see keyInsertReq()
+    void _keyInsertReq(CompositeKey const& key, int chunk, int subchunk); ///< see keyInsertReq()
     void _handleKeyInsertComplete(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf);
 
-    void _keyInfoReq(std::string const& key); ///< see keyInfoReq()
-    void _handleKeyInfo(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf);
+    void _keyLookupReq(CompositeKey const& key); ///< see keyLookReq()
+    void _handleKeyLookup(LoaderMsg const& inMsg, std::unique_ptr<proto::KeyInfo>& protoBuf);
 
 
 
@@ -119,7 +118,7 @@ private:
     struct KeyInsertReqOneShot : public DoListItem {
         using Ptr = std::shared_ptr<KeyInsertReqOneShot>;
 
-        KeyInsertReqOneShot(CentralClient* central_, std::string const& key_, int chunk_, int subchunk_) :
+        KeyInsertReqOneShot(CentralClient* central_, CompositeKey const& key_, int chunk_, int subchunk_) :
             cmdData(std::make_shared<KeyInfoData>(key_, chunk_, subchunk_)), central(central_) {
             setOneShot(true);
         }
@@ -134,18 +133,18 @@ private:
         CentralClient* central;
     };
 
-    /// Create commands to find a key in the index and get its value.
+    /// Create commands to lookup a key in the index and get its value.
     /// It should keep trying this until it works and then drop it from _waitingKeyInfoMap.
-    struct KeyInfoReqOneShot : public DoListItem {
-        using Ptr = std::shared_ptr<KeyInfoReqOneShot>;
+    struct KeyLookupReqOneShot : public DoListItem {
+        using Ptr = std::shared_ptr<KeyLookupReqOneShot>;
 
-        KeyInfoReqOneShot(CentralClient* central_, std::string const& key_) :
+        KeyLookupReqOneShot(CentralClient* central_, CompositeKey const& key_) :
             cmdData(std::make_shared<KeyInfoData>(key_, -1, -1)), central(central_) { setOneShot(true); }
 
         util::CommandTracked::Ptr createCommand() override;
 
         // TODO Have this function take result codes as arguments and put them in cmdData.
-        void keyInfoComplete(std::string const& key, int chunk, int subchunk, bool success);
+        void keyInfoComplete(CompositeKey const& key, int chunk, int subchunk, bool success);
 
         KeyInfoData::Ptr cmdData;
         CentralClient* central;
@@ -162,14 +161,16 @@ private:
     const int         _defWorkerPortUdp; ///< Default worker UDP port
 
 
-    int _doListMaxLookups; ///< Maximum number of concurrent lookups in DoList  DM-16555
-    int _doListMaxInserts; ///< Maximum number of concurrent inserts in DoList  DM-16555
+    size_t const _doListMaxLookups = 1000; ///< Maximum number of concurrent lookups in DoList, set by config
+    size_t const _doListMaxInserts = 1000; ///< Maximum number of concurrent inserts in DoList, set by config
+    /// Time to sleep between checking requests when at max length, set by config
+    int const _maxRequestSleepTime = 100000;
 
-    std::map<std::string, KeyInsertReqOneShot::Ptr> _waitingKeyInsertMap;
-    std::mutex _waitingKeyInsertMtx; ///< protects _waitingKeyInsertMap
+    std::map<CompositeKey, KeyInsertReqOneShot::Ptr> _waitingKeyInsertMap; ///< Map of current insert requests.
+    std::mutex _waitingKeyInsertMtx; ///< protects _waitingKeyInsertMap, _doListMaxInserts
 
-    std::map<std::string, KeyInfoReqOneShot::Ptr> _waitingKeyInfoMap;
-    std::mutex _waitingKeyInfoMtx; ///< protects _waitingKeyInfoMap
+    std::map<CompositeKey, KeyLookupReqOneShot::Ptr> _waitingKeyLookupMap; ///< Map of current look up requests.
+    std::mutex _waitingKeyLookupMtx; ///< protects _waitingKeyLookMap, _doListMaxLookups
 };
 
 }}} // namespace lsst::qserv::loader

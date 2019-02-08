@@ -21,18 +21,19 @@
  * see <http://www.lsstcorp.org/LegalNotices/>.
  */
 
+
 // Class header
-#include "loader/WorkerListItemBase.h"
+#include "loader/CompositeKey.h"
 
 // System headers
-#include <boost/asio.hpp>
 #include <iostream>
+
 
 // LSST headers
 #include "lsst/log/Log.h"
 
 namespace {
-LOG_LOGGER _log = LOG_GET("lsst.qserv.loader.WorkerListBase");
+LOG_LOGGER _log = LOG_GET("lsst.qserv.loader.CompositeKey");
 }
 
 namespace lsst {
@@ -40,31 +41,26 @@ namespace qserv {
 namespace loader {
 
 
-KeyRange WorkerListItemBase::setRangeString(KeyRange const& strRange) {
-    std::lock_guard<std::mutex> lck(_mtx);
-    auto oldRange = _range;
-    _range = strRange;
-     LOGS(_log, LOG_LVL_INFO, "setRangeStr name=" << _wId << " range=" << _range <<
-                             " oldRange=" << oldRange);
-    return oldRange;
+CompositeKey const CompositeKey::minValue(0,"");
+
+
+void CompositeKey::dump(std::ostream& os) const {
+    os << "CKey(" << kInt << ", " << kStr << ")";
 }
 
 
-std::ostream& WorkerListItemBase::dump(std::ostream& os) const {
-    os << "wId=" << _wId;
-    os << " UDP=" << getUdpAddress();
-    os << " TCP=" << getTcpAddress();
-    std::lock_guard<std::mutex> lck(_mtx);
-    os << " range("<< _range << ")";
+std::string CompositeKey::dump() const {
+    std::stringstream os;
+    dump(os);
+    return os.str();
+}
+
+
+std::ostream& operator<<(std::ostream& os, CompositeKey const& cKey) {
+    cKey.dump(os);
     return os;
 }
 
 
-std::ostream& operator<<(std::ostream& os, WorkerListItemBase const& item) {
-    return item.dump(os);
-}
-
-
 }}} // namespace lsst::qserv::loader
-
 
