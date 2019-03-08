@@ -81,7 +81,7 @@ class DataLoader(object):
     def __init__(self, configFiles, czarWmgr, workerWmgrMap={}, chunksDir="./loader_chunks",
                  chunkPrefix='chunk', keepChunks=False, skipPart=False, oneTable=False,
                  css=None, cssClear=False, indexDb='qservMeta', tmpDir=None,
-                 emptyChunks=None, deleteTables=False, loggerName=None):
+                 emptyChunks=None, deleteTables=False, loggerName=None, doNotResetEmptyChunks=None):
         """
         Constructor parses all arguments and prepares for execution.
 
@@ -126,6 +126,7 @@ class DataLoader(object):
         self.cssClear = cssClear
         self.indexDb = None if oneTable else indexDb
         self.emptyChunks = emptyChunks
+        self.doNotResetEmptyChunks = doNotResetEmptyChunks
         self.deleteTables = deleteTables
 
         self.chunkRe = re.compile('^' + self.chunkPrefix + '_(?P<id>[0-9]+)(?P<ov>_overlap)?[.]txt$')
@@ -211,9 +212,11 @@ class DataLoader(object):
         self._loadData(database, table, files)
 
         # create special dummy chunk
+        self._log.info("*** SES *** createDummyChunk")
         self._createDummyChunk(database, table)
 
         # create index on czar size
+        self._log.info("*** SES *** makeindex")
         self._makeIndex(database, table)
 
         # update CSS with info for this table
@@ -221,7 +224,15 @@ class DataLoader(object):
             self._updateCss(database, table)
 
         # optionally make emptyChunks file
-        self._makeEmptyChunks()
+#        self._makeEmptyChunks()
+
+        if not self.doNotResetEmptyChunks:
+            self._log.info('*** SES *** : create empty chunk file')
+            self._makeEmptyChunks()
+        else:
+            self._log.info('*** SES *** : keep existing empty chunk file')
+            self._updateEmptyChunks()
+
 
     def _cleanup(self):
         """
@@ -757,6 +768,45 @@ class DataLoader(object):
             if chunk not in self.chunks:
                 print(chunk, file=out)
 
+    def _updateEmptyChunks(self):
+  
+        if not self.emptyChunks:
+            # need a file name
+            return
+
+        # only makes sense for true partitioned tables
+        if not self.partitioned:
+            self._log.info('Table is not partitioned, will not make empty chunks file %r', self.emptyChunks)
+            return
+
+        # max possible number of chunks
+        nStripes = int(self.partOptions['part.num-stripes'])
+        maxChunks = 2 * nStripes ** 2
+
+        existingChunkList=[i for i in range(0,maxChunks)]
+#        try:
+#            in_file = open(self.emptyChunks, 'r')
+#            tmp = in_file.readlines()
+#            in_file.close()
+#            existingChunkList=[int(x.strip()) for x in tmp if x.strip()!=""]
+#            self._log.info("Existing chunks : ",existingChunkList)
+#        except:
+#            pass
+
+
+        in_file = open(self.emptyChunks, 'r')
+        tmp = in_file.readlines()
+        in_file.close()
+        existingChunkList=[int(x.strip()) for x in tmp if x.strip()!=""]
+#        self._log.info("Existing chunks : ",existingChunkList)
+
+
+        out = open(self.emptyChunks, 'w')
+        for chunk in range(maxChunks):
+            if chunk not in self.chunks and chunk in existingChunkList:
+                print(chunk, file=out)
+
+
     def _makeIndex(self, database, table):
         """
         Generate object index in czar meta database.
@@ -766,6 +816,7 @@ class DataLoader(object):
         if not self.partitioned or \
            not self.partOptions.isDirector(database, table) or \
            not self.indexDb:
+            self._log.info("*** SES *** : non index")
             return
 
         metaTable = database + '__' + table

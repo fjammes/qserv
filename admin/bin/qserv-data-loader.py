@@ -170,6 +170,9 @@ class Loader(object):
         group.add_argument('-E', '--empty-chunks', dest='emptyChunks', default=None, metavar='PATH',
                            help='Path name for "empty chunks" file, if not specified then this file is '
                            'not produced.')
+        group.add_argument( '-Z','--doNotResetEmptyChunks', dest='doNotResetEmptyChunks',default=None, 
+                           action='store_true',help='Do not reset the content of the empty chunk file')
+
         group.add_argument('-i', '--index-db', dest='indexDb', default='qservMeta', metavar='DB_NAME',
                            help='Name of the database which keeps czar-side object index, def: '
                            '%(default)s. Index is generated only for director table which is specified '
@@ -247,6 +250,7 @@ class Loader(object):
                                  cssClear=self.args.cssClear,
                                  indexDb=self.args.indexDb,
                                  emptyChunks=self.args.emptyChunks,
+                                 doNotResetEmptyChunks=self.args.doNotResetEmptyChunks,
                                  deleteTables=self.args.deleteTables,
                                  loggerName=loggerName)
 
