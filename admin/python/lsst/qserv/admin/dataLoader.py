@@ -81,7 +81,8 @@ class DataLoader(object):
     def __init__(self, configFiles, czarWmgr, workerWmgrMap={}, chunksDir="./loader_chunks",
                  chunkPrefix='chunk', keepChunks=False, skipPart=False, oneTable=False,
                  css=None, cssClear=False, indexDb='qservMeta', tmpDir=None,
-                 emptyChunks=None, deleteTables=False, loggerName=None, doNotResetEmptyChunks=None):
+                 emptyChunks=None, deleteTables=False, loggerName=None,
+                 doNotResetEmptyChunks=None, doNotResetCSSTable=None)
         """
         Constructor parses all arguments and prepares for execution.
 
@@ -127,6 +128,7 @@ class DataLoader(object):
         self.indexDb = None if oneTable else indexDb
         self.emptyChunks = emptyChunks
         self.doNotResetEmptyChunks = doNotResetEmptyChunks
+        self.doNotResetCSSTable = doNotResetCSSTable
         self.deleteTables = deleteTables
 
         self.chunkRe = re.compile('^' + self.chunkPrefix + '_(?P<id>[0-9]+)(?P<ov>_overlap)?[.]txt$')
@@ -284,7 +286,8 @@ class DataLoader(object):
                 self.css.dropTable(database, table)
             else:
                 self._log.error('Table is already defined in CSS')
-                raise RuntimeError('table exists in CSS')
+                if not self.doNotResetCSSTable:
+                    raise RuntimeError('table exists in CSS')
 
     @staticmethod
     def _checkPartParam(partOptions, partKey, cssValue, optType=str):
@@ -719,7 +722,9 @@ class DataLoader(object):
             else:
                 pParams = css.PartTableParams()
                 sParams = css.ScanTableParams()
-            self.css.createTable(database, table, schema, pParams, sParams)
+
+            if not self.doNotResetCSSTable:  
+                self.css.createTable(database, table, schema, pParams, sParams)
 
         # save chunk mapping too
         self._log.info('Saving updated chunk map to CSS')

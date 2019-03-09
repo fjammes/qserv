@@ -172,6 +172,8 @@ class Loader(object):
                            'not produced.')
         group.add_argument( '-Z','--doNotResetEmptyChunks', dest='doNotResetEmptyChunks',default=None, 
                            action='store_true',help='Do not reset the content of the empty chunk file')
+        group.add_argument( '-Y','--doNotResetCSSTable', dest='doNotResetCSSTable',default=None, 
+                           action='store_true',help='Do not reset the content of the CSS table (chunk vs node)')
 
         group.add_argument('-i', '--index-db', dest='indexDb', default='qservMeta', metavar='DB_NAME',
                            help='Name of the database which keeps czar-side object index, def: '
@@ -251,6 +253,7 @@ class Loader(object):
                                  indexDb=self.args.indexDb,
                                  emptyChunks=self.args.emptyChunks,
                                  doNotResetEmptyChunks=self.args.doNotResetEmptyChunks,
+                                 doNotResetCSSTable=self.args.doNotResetCSSTable,
                                  deleteTables=self.args.deleteTables,
                                  loggerName=loggerName)
 
