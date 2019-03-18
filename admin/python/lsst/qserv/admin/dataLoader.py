@@ -82,7 +82,7 @@ class DataLoader(object):
                  chunkPrefix='chunk', keepChunks=False, skipPart=False, oneTable=False,
                  css=None, cssClear=False, indexDb='qservMeta', tmpDir=None,
                  emptyChunks=None, deleteTables=False, loggerName=None,
-                 doNotResetEmptyChunks=None, doNotResetCSSTable=None):
+                 doNotResetEmptyChunks=None, doNotRegisterXrootdDb=None, doNotResetCSSTable=None):
         """
         Constructor parses all arguments and prepares for execution.
 
@@ -128,6 +128,7 @@ class DataLoader(object):
         self.indexDb = None if oneTable else indexDb
         self.emptyChunks = emptyChunks
         self.doNotResetEmptyChunks = doNotResetEmptyChunks
+        self.doNotRegisterXrootdDb = doNotRegisterXrootdDb
         self.doNotResetCSSTable = doNotResetCSSTable
         self.deleteTables = deleteTables
 

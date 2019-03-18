@@ -172,6 +172,8 @@ class Loader(object):
                            'not produced.')
         group.add_argument( '-Z','--doNotResetEmptyChunks', dest='doNotResetEmptyChunks',default=None, 
                            action='store_true',help='Do not reset the content of the empty chunk file')
+        group.add_argument( '-X','--doNotRegisterXrootdDb', dest='doNotRegisterXrootdDb',default=None, 
+                           action='store_true',help='Do not register Xrootd Db')
         group.add_argument( '-Y','--doNotResetCSSTable', dest='doNotResetCSSTable',default=None, 
                            action='store_true',help='Do not reset the content of the CSS table (chunk vs node)')
 
@@ -253,6 +255,7 @@ class Loader(object):
                                  indexDb=self.args.indexDb,
                                  emptyChunks=self.args.emptyChunks,
                                  doNotResetEmptyChunks=self.args.doNotResetEmptyChunks,
+                                 doNotRegisterXrootdDb=self.args.doNotRegisterXrootdDb,
                                  doNotResetCSSTable=self.args.doNotResetCSSTable,
                                  deleteTables=self.args.deleteTables,
                                  loggerName=loggerName)
